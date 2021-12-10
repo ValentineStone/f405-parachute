@@ -30,7 +30,7 @@
 #include "ssd1306.h"
 #include "ssd1306_fonts.h"
 #include "bmp280.h"
-#include "Invn/Devices/Drivers/Icm20602/Icm20602.h"
+#include "icm20602.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -64,12 +64,6 @@ UART_HandleTypeDef huart1;
 
 /* USER CODE BEGIN PV */
 
-static inv_icm20602_t icm_device;
-static uint8_t chip_info[3];
-static uint32_t period_us = DEFAULT_ODR_US /* 50Hz by default */;
-static int32_t cfg_acc_fsr = 4000; /* +/- 4g */
-static int32_t cfg_gyr_fsr = 2000; /* +/- 2000dps */
-
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -84,12 +78,10 @@ static void MX_SPI1_Init(void);
 static void debug_printf(const char* format, ...);
 static void debug_log(const char* format, ...);
 
-static int icm20602_sensor_setup(void);
-static int icm20602_sensor_configuration(void);
-
-static int idd_io_hal_read_reg(void * context, uint8_t reg, uint8_t * rbuffer, uint32_t rlen);
-static int idd_io_hal_write_reg(void * context, uint8_t reg, const uint8_t * wbuffer, uint32_t wlen);
-static void check_rc(int rc, const char * context_str);
+int8_t _icm20602_hal_wr(uint8_t id, uint8_t reg, uint8_t * data, uint16_t len);
+int8_t _icm20602_hal_rd(uint8_t id, uint8_t reg, uint8_t * data, uint16_t len);
+//void   _icm20602_mutex_lock(uint8_t id);
+//void   _icm20602_mutex_unlock(uint8_t id);
 
 /* USER CODE END PFP */
 
@@ -153,17 +145,16 @@ int main(void)
     if (HAL_OK == HAL_I2C_IsDeviceReady(&hi2c1, (uint16_t)(i<<1), 3, 5))
     	debug_log("0x%X", i);
 
-  struct inv_icm20602_serif icm20602_serif;
-  icm20602_serif.context   = 0; // no need
-  icm20602_serif.read_reg  = idd_io_hal_read_reg;
-  icm20602_serif.write_reg = idd_io_hal_write_reg;
-  icm20602_serif.max_read  = 1024*32; // maximum number of bytes allowed per serial read
-  icm20602_serif.max_write = 1024*32; // maximum number of bytes allowed per serial write
-  icm20602_serif.is_spi    = 1;
-  inv_icm20602_reset_states(&icm_device, &icm20602_serif);
-  icm20602_sensor_setup();
-  icm20602_sensor_configuration();
 
+  debug_log("ICM-20602 setup");
+  struct icm20602_dev icm20602 = ICM20602_DEFAULT_INIT();
+  icm20602.i2c_disable = true;
+  icm20602.hal_sleep = HAL_Delay;
+  icm20602.hal_rd = _icm20602_hal_rd;
+  icm20602.hal_wr = _icm20602_hal_wr;
+  icm20602_init(&icm20602);
+
+  debug_log("OLED setup");
   char str_buffer[256] = "Boop zero";
   struct { float x, y, dx, dy; uint8_t r; } pos;
   uint32_t last_boop = HAL_GetTick();
@@ -273,16 +264,17 @@ int main(void)
 	  ssd1306_SetCursor(0, 30);
 	  ssd1306_WriteString(str_buffer, Font_6x8, White);
 
+	  float ax, ay, az;
+	  float gx, gy, gz;
+
+	  icm20602_read_accel(&icm20602, &ax, &ay, &az);
+	  icm20602_read_gyro(&icm20602, &gx, &gy, &gz);
+
 	  snprintf(
         str_buffer,
 		sizeof(str_buffer) - 1,
-		"G %i %i %i A %i %i %i",
-		icm_device.gyro_st_bias[0],
-		icm_device.gyro_st_bias[1],
-		icm_device.gyro_st_bias[2],
-		icm_device.accel_st_bias[0],
-		icm_device.accel_st_bias[1],
-		icm_device.accel_st_bias[2]
+		"G %f %f %f A %f %f %f",
+		ax, ay, az, gx, gy, gz
 	  );
 	  ssd1306_SetCursor(0, 40);
 	  ssd1306_WriteString(str_buffer, Font_6x8, White);
@@ -524,121 +516,6 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 
-static const uint8_t EXPECTED_WHOAMI[] = { 0x12, 0x11 };
-
-int icm20602_sensor_setup(void)
-{
-	int rc;
-	uint8_t i, whoami = 0xff;
-
-	/*
-	 * Just get the whoami
-	 */
-	rc = inv_icm20602_get_whoami(&icm_device, &whoami);
-	debug_log("ICM20602 WHOAMI=0x%02x", whoami);
-	check_rc(rc, "Error reading WHOAMI");
-
-	/*
-	 * Check if WHOAMI value corresponds to any value from EXPECTED_WHOAMI array
-	 */
-	for(i = 0; i < sizeof(EXPECTED_WHOAMI)/sizeof(EXPECTED_WHOAMI[0]); ++i) {
-		if(whoami == EXPECTED_WHOAMI[i])
-			break;
-	}
-
-	if(i == sizeof(EXPECTED_WHOAMI)/sizeof(EXPECTED_WHOAMI[0])) {
-		debug_log("Bad WHOAMI value. Got 0x%02x. Expected 0x12, 0x11.", whoami);
-		//check_rc(-1, "");
-	}
-
-	rc = inv_icm20602_get_chip_info(&icm_device, chip_info);
-	check_rc(rc, "Could not obtain chip info");
-
-	/*
-	 * Configure and initialize the ICM20602 for normal use
-	 */
-	debug_log("Booting up icm20602...");
-
-	/* set default power mode */
-	if (!inv_icm20602_is_sensor_enabled(&icm_device, INV_ICM20602_SENSOR_GYRO) &&
-		!inv_icm20602_is_sensor_enabled(&icm_device, INV_ICM20602_SENSOR_ACCEL)) {
-		debug_log("Putting icm20602 in sleep mode...");
-		rc = inv_icm20602_initialize(&icm_device);
-		check_rc(rc, "Error %d while setting-up icm20602 device");
-	}
-
-	/* set default ODR = 50Hz */
-	rc = inv_icm20602_set_sensor_period(&icm_device, INV_ICM20602_SENSOR_ACCEL, DEFAULT_ODR_US/1000 /*ms*/);
-	check_rc(rc, "Error %d while setting-up icm20602 device");
-
-	rc = inv_icm20602_set_sensor_period(&icm_device, INV_ICM20602_SENSOR_GYRO, DEFAULT_ODR_US/1000 /*ms*/);
-	check_rc(rc, "Error %d while setting-up icm20602 device");
-
-	period_us = DEFAULT_ODR_US;
-
-	/* we should be good to go ! */
-	debug_log("We're good to go !");
-
-	return 0;
-}
-
-int icm20602_sensor_configuration(void)
-{
-	int rc;
-
-	debug_log("Configuring accelerometer FSR");
-	rc = inv_icm20602_set_accel_fullscale(&icm_device, inv_icm20602_accel_fsr_2_reg(cfg_acc_fsr));
-	check_rc(rc, "Error configuring ACC sensor");
-
-	debug_log("Configuring gyroscope FSR");
-	rc = inv_icm20602_set_gyro_fullscale(&icm_device, inv_icm20602_gyro_fsr_2_reg(cfg_gyr_fsr));
-	check_rc(rc, "Error configuring GYR sensor");
-
-	return rc;
-}
-
-static int idd_io_hal_read_reg(void * context, uint8_t reg, uint8_t * rbuffer, uint32_t rlen)
-{
-	reg |= 128; // set first bit to 1 to read from spi register
-	HAL_GPIO_WritePin(GPIOC, SPI1_CS_MANUAL_Pin, GPIO_PIN_RESET);
-	HAL_StatusTypeDef s;
-	s = HAL_SPI_Transmit(&hspi1, &reg, 1, 1000);
-	s = s ? s : HAL_SPI_Receive(&hspi1, rbuffer, rlen, 1000);
-	HAL_GPIO_WritePin(GPIOC, SPI1_CS_MANUAL_Pin, GPIO_PIN_SET);
-	return s;
-}
-
-static int idd_io_hal_write_reg(void * context, uint8_t reg, const uint8_t * wbuffer, uint32_t wlen)
-{
-	HAL_GPIO_WritePin(GPIOC, SPI1_CS_MANUAL_Pin, GPIO_PIN_RESET);
-	HAL_StatusTypeDef s;
-	s = HAL_SPI_Transmit(&hspi1, &reg, 1, 1000);
-	s = s ? s : HAL_SPI_Transmit(&hspi1, wbuffer, wlen, 1000);
-	HAL_GPIO_WritePin(GPIOC, SPI1_CS_MANUAL_Pin, GPIO_PIN_SET);
-	return s;
-}
-
-/*
- * Sleep implementation for ICM20602
- */
-void inv_icm20602_sleep(int ms)
-{
-	HAL_Delay(ms);
-}
-
-void inv_icm20602_sleep_us(int us)
-{
-	HAL_Delay(us / 1000);
-}
-
-static void check_rc(int rc, const char * msg_context)
-{
-	if(rc < 0) {
-		debug_log("%s: error %d (%s)", msg_context, rc, inv_error_str(rc));
-		while(1);
-	}
-}
-
 static void debug_printf(const char* format, ...) {
   static char buff[1024];
   va_list argptr;
@@ -659,6 +536,25 @@ static void debug_log(const char* format, ...) {
   const size_t len = strlen(buff);
   HAL_UART_Transmit(&huart1, (uint8_t*)buff, len, 1000);
   HAL_UART_Transmit(&huart1, "\n", 1, 1000);
+}
+
+int8_t _icm20602_hal_rd(uint8_t id, uint8_t reg, uint8_t * data, uint16_t len) {
+	reg |= 128; // set first bit to 1 to read from spi register
+	HAL_GPIO_WritePin(GPIOC, SPI1_CS_MANUAL_Pin, GPIO_PIN_RESET);
+	HAL_StatusTypeDef s;
+	s = HAL_SPI_Transmit(&hspi1, &reg, 1, 1000);
+	s = s ? s : HAL_SPI_Receive(&hspi1, data, len, 1000);
+	HAL_GPIO_WritePin(GPIOC, SPI1_CS_MANUAL_Pin, GPIO_PIN_SET);
+	return s;
+}
+
+int8_t _icm20602_hal_wr(uint8_t id, uint8_t reg, uint8_t * data, uint16_t len) {
+	HAL_GPIO_WritePin(GPIOC, SPI1_CS_MANUAL_Pin, GPIO_PIN_RESET);
+	HAL_StatusTypeDef s;
+	s = HAL_SPI_Transmit(&hspi1, &reg, 1, 1000);
+	s = s ? s : HAL_SPI_Transmit(&hspi1, data, len, 1000);
+	HAL_GPIO_WritePin(GPIOC, SPI1_CS_MANUAL_Pin, GPIO_PIN_SET);
+	return s;
 }
 /* USER CODE END 4 */
 
