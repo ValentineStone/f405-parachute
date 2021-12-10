@@ -51,6 +51,7 @@
 									<listOptionValue builtIn="false" value="../Drivers/stm32-ssd1306"/>
 									<listOptionValue builtIn="false" value="../Drivers/BMP280"/>
 									<listOptionValue builtIn="false" value="../Drivers"/>
+									<listOptionValue builtIn="false" value="../Drivers/ICM-20602_HAL_Driver"/>
 								</option>
 								<inputType id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.input.c.248302594" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.input.c"/>
 							</tool>

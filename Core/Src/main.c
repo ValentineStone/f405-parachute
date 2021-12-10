@@ -81,6 +81,7 @@ static void MX_RNG_Init(void);
 static void MX_SPI1_Init(void);
 /* USER CODE BEGIN PFP */
 
+static void debug_printf(const char* format, ...);
 static void debug_log(const char* format, ...);
 
 static int icm20602_sensor_setup(void);
@@ -272,19 +273,19 @@ int main(void)
 	  ssd1306_SetCursor(0, 30);
 	  ssd1306_WriteString(str_buffer, Font_6x8, White);
 
-	  /*snprintf(
+	  snprintf(
         str_buffer,
 		sizeof(str_buffer) - 1,
-		"G %u %u %u %u %u %u",
-		icm_device.base_state.gyro_averaging,
-		icm_device.base_state.accel_bw,
-		icm_device.base_state.accel_div,
-		icm_device.base_state.accel_div,
-		icm_device.base_state.accel_fullscale,
-		icm_device.base_state.accel_ois_fullscale
+		"G %i %i %i A %i %i %i",
+		icm_device.gyro_st_bias[0],
+		icm_device.gyro_st_bias[1],
+		icm_device.gyro_st_bias[2],
+		icm_device.accel_st_bias[0],
+		icm_device.accel_st_bias[1],
+		icm_device.accel_st_bias[2]
 	  );
 	  ssd1306_SetCursor(0, 40);
-	  ssd1306_WriteString(str_buffer, Font_6x8, White);*/
+	  ssd1306_WriteString(str_buffer, Font_6x8, White);
 
 	  ssd1306_DrawRectangle(pos.x, pos.y, pos.x + pos.r - 1, pos.y + pos.r - 1, White);
 	  ssd1306_UpdateScreen();
@@ -424,7 +425,7 @@ static void MX_SPI1_Init(void)
   hspi1.Init.CLKPolarity = SPI_POLARITY_LOW;
   hspi1.Init.CLKPhase = SPI_PHASE_1EDGE;
   hspi1.Init.NSS = SPI_NSS_SOFT;
-  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_2;
+  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_8;
   hspi1.Init.FirstBit = SPI_FIRSTBIT_MSB;
   hspi1.Init.TIMode = SPI_TIMODE_DISABLE;
   hspi1.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
@@ -487,7 +488,7 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(Buzzer_GPIO_Port, Buzzer_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOC, Buzzer_Pin|SPI1_CS_MANUAL_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(LED_Blue_GPIO_Port, LED_Blue_Pin, GPIO_PIN_RESET);
@@ -498,6 +499,13 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(Buzzer_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : SPI1_CS_MANUAL_Pin */
+  GPIO_InitStruct.Pin = SPI1_CS_MANUAL_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_PULLDOWN;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(SPI1_CS_MANUAL_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pin : Button_Pin */
   GPIO_InitStruct.Pin = Button_Pin;
@@ -589,41 +597,25 @@ int icm20602_sensor_configuration(void)
 	return rc;
 }
 
-
 static int idd_io_hal_read_reg(void * context, uint8_t reg, uint8_t * rbuffer, uint32_t rlen)
 {
+	reg |= 128; // set first bit to 1 to read from spi register
+	HAL_GPIO_WritePin(GPIOC, SPI1_CS_MANUAL_Pin, GPIO_PIN_RESET);
 	HAL_StatusTypeDef s;
-	uint8_t zero;
-	uint8_t zero_buff[rlen];
-	memset(zero_buff, 0, rlen);
-	debug_log("Read @%u %u bytes", reg, rlen);
-	s = HAL_SPI_TransmitReceive(&hspi1, &reg, &zero, 1, 1000);
-	if (s) return s;
-	s = HAL_SPI_TransmitReceive(&hspi1, zero_buff, rbuffer, rlen, 1000);
-	if (s) return s;
-	debug_log("Result %u", s);
+	s = HAL_SPI_Transmit(&hspi1, &reg, 1, 1000);
+	s = s ? s : HAL_SPI_Receive(&hspi1, rbuffer, rlen, 1000);
+	HAL_GPIO_WritePin(GPIOC, SPI1_CS_MANUAL_Pin, GPIO_PIN_SET);
 	return s;
-	//int rc = HAL_I2C_Mem_Read(&hi2c1, ICM_I2C_ADDR, reg, I2C_MEMADD_SIZE_8BIT, rbuffer, rlen, 1000);
-	//return HAL_I2C_Master_Receive(&hi2c1, ICM_I2C_ADDR, rbuffer, rlen, 1000);
-	//return i2c_master_read_register(ICM_I2C_ADDR, reg, rlen, rbuffer);
 }
 
 static int idd_io_hal_write_reg(void * context, uint8_t reg, const uint8_t * wbuffer, uint32_t wlen)
 {
+	HAL_GPIO_WritePin(GPIOC, SPI1_CS_MANUAL_Pin, GPIO_PIN_RESET);
 	HAL_StatusTypeDef s;
-	uint8_t zero;
-	uint8_t zero_buff[wlen];
-	memset(zero_buff, 0, wlen);
-	debug_log("Writ @%u %u bytes", reg, wlen);
-	s = HAL_SPI_TransmitReceive(&hspi1, &reg, &zero, 1, 1000);
-	if (s) return s;
-	s = HAL_SPI_TransmitReceive(&hspi1, wbuffer, zero_buff, wlen, 1000);
-	if (s) return s;
-	debug_log("Result %u", s);
+	s = HAL_SPI_Transmit(&hspi1, &reg, 1, 1000);
+	s = s ? s : HAL_SPI_Transmit(&hspi1, wbuffer, wlen, 1000);
+	HAL_GPIO_WritePin(GPIOC, SPI1_CS_MANUAL_Pin, GPIO_PIN_SET);
 	return s;
-	//int rc = HAL_I2C_Mem_Write(&hi2c1, ICM_I2C_ADDR, reg, I2C_MEMADD_SIZE_8BIT, wbuffer, wlen, 1000);
-	//return HAL_I2C_Master_Transmit(&hi2c1, ICM_I2C_ADDR, wbuffer, wlen, 1000);
-	//return i2c_master_write_register(ICM_I2C_ADDR, reg, wlen, wbuffer);
 }
 
 /*
@@ -647,6 +639,17 @@ static void check_rc(int rc, const char * msg_context)
 	}
 }
 
+static void debug_printf(const char* format, ...) {
+  static char buff[1024];
+  va_list argptr;
+  va_start(argptr, format);
+  vsnprintf(buff, 1023, format, argptr);
+  va_end(argptr);
+  const size_t len = strlen(buff);
+  HAL_UART_Transmit(&huart1, (uint8_t*)buff, len, 1000);
+}
+
+
 static void debug_log(const char* format, ...) {
   static char buff[1024];
   va_list argptr;
@@ -657,7 +660,6 @@ static void debug_log(const char* format, ...) {
   HAL_UART_Transmit(&huart1, (uint8_t*)buff, len, 1000);
   HAL_UART_Transmit(&huart1, "\n", 1, 1000);
 }
-
 /* USER CODE END 4 */
 
 /**
