@@ -47,7 +47,7 @@
     .use_accel = true, \
     .accel_fifo = false, \
     .accel_dlpf = ICM20602_ACCEL_DLPF_10_2_HZ, \
-    .accel_g = ICM20602_ACCEL_RANGE_4G, \
+    .accel_g = ICM20602_ACCEL_RANGE_2G, \
     .use_gyro = true, \
     .gyro_fifo = false, \
     .gyro_dlpf = ICM20602_GYRO_DLPF_10_HZ, \
@@ -116,10 +116,10 @@ enum icm20602_accel_dlpf {
 /** Enumerated value corresponds with ACCEL_FS_SEL in the ACCEL_CONFIG
   * register. Values listed are the full +/- G range. */
 enum icm20602_accel_g {
-  ICM20602_ACCEL_RANGE_2G = 0,
-  ICM20602_ACCEL_RANGE_4G = 1,
-  ICM20602_ACCEL_RANGE_8G = 2,
-  ICM20602_ACCEL_RANGE_16G = 3,
+  ICM20602_ACCEL_RANGE_2G  = 0b0000,
+  ICM20602_ACCEL_RANGE_4G  = 0b0100,
+  ICM20602_ACCEL_RANGE_8G  = 0b1000,
+  ICM20602_ACCEL_RANGE_16G = 0b1100,
 };
 
 /** Enumerated value corresponds with DLPF_CFG in the CONFIG register unless

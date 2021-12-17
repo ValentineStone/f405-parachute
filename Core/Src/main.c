@@ -29,6 +29,7 @@
 #include <string.h>
 #include "ssd1306.h"
 #include "ssd1306_fonts.h"
+#include <math.h>
 #include "bmp280.h"
 #include "icm20602.h"
 /* USER CODE END Includes */
@@ -75,30 +76,121 @@ static void MX_RNG_Init(void);
 static void MX_SPI1_Init(void);
 /* USER CODE BEGIN PFP */
 
-static void debug_printf(const char* format, ...);
-static void debug_log(const char* format, ...);
-
-int8_t _icm20602_hal_wr(uint8_t id, uint8_t reg, uint8_t * data, uint16_t len);
-int8_t _icm20602_hal_rd(uint8_t id, uint8_t reg, uint8_t * data, uint16_t len);
-//void   _icm20602_mutex_lock(uint8_t id);
-//void   _icm20602_mutex_unlock(uint8_t id);
-
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
-int8_t rand_sign(void) {
-	return (rand() % 100 > 50) ? 1 : -1;
+char str_buffer[256] = "";
+
+static void debug_printf(const char* format, ...) {
+  static char buff[1024];
+  va_list argptr;
+  va_start(argptr, format);
+  vsnprintf(buff, 1023, format, argptr);
+  va_end(argptr);
+  const size_t len = strlen(buff);
+  HAL_UART_Transmit(&huart1, (uint8_t*)buff, len, 1000);
 }
 
-uint8_t rand_bool(void) {
-	return (rand() % 100 > 50) ? 1 : 0;
+int8_t _icm20602_hal_rd(uint8_t id, uint8_t reg, uint8_t * data, uint16_t len) {
+  reg |= 128; // set first bit to 1 to read from spi register
+  HAL_GPIO_WritePin(GPIOC, SPI1_CS_MANUAL_Pin, GPIO_PIN_RESET);
+  HAL_StatusTypeDef s;
+  s = HAL_SPI_Transmit(&hspi1, &reg, 1, 1000);
+  s = s ? s : HAL_SPI_Receive(&hspi1, data, len, 1000);
+  HAL_GPIO_WritePin(GPIOC, SPI1_CS_MANUAL_Pin, GPIO_PIN_SET);
+  return s;
+}
+
+int8_t _icm20602_hal_wr(uint8_t id, uint8_t reg, uint8_t * data, uint16_t len) {
+  HAL_GPIO_WritePin(GPIOC, SPI1_CS_MANUAL_Pin, GPIO_PIN_RESET);
+  HAL_StatusTypeDef s;
+  s = HAL_SPI_Transmit(&hspi1, &reg, 1, 1000);
+  s = s ? s : HAL_SPI_Transmit(&hspi1, data, len, 1000);
+  HAL_GPIO_WritePin(GPIOC, SPI1_CS_MANUAL_Pin, GPIO_PIN_SET);
+  return s;
 }
 
 float altitude_from_pressure(float pressure, float temperature) {
-	static float pressure0 = 101325;
-	return ((pow(pressure0 / pressure, 1 / 5.257) - 1) * (temperature + 273.15)) / 0.0065;
+  static float pressure0 = 101325;
+  return ((pow(pressure0 / pressure, 1 / 5.257) - 1) * (temperature + 273.15)) / 0.0065;
+}
+
+float accel_abs(float ax, float ay, float az) {
+  return sqrtf(powf(ax, 2) + pow(ay, 2) + pow(az, 2));
+}
+
+typedef struct {
+  uint32_t interval;
+  uint32_t last;
+  uint32_t skipped;
+} ticker_t;
+
+ticker_t create_ticker(uint32_t interval) {
+  return (ticker_t) { interval, 0, 0 };
+}
+
+bool tick(ticker_t* t) {
+  uint32_t now = HAL_GetTick();
+  if (now - t->last >= t->interval) {
+    t->last = now;
+    t->skipped = 0;
+  } else
+    t->skipped++;
+  return !t->skipped;
+}
+
+typedef struct button_t {
+  GPIO_TypeDef* GPIOx;
+  uint16_t GPIO_Pin;
+  int8_t pressed;
+  bool toggle;
+  bool changed;
+} button_t;
+
+bool check_button(button_t* button) {
+  bool current = !HAL_GPIO_ReadPin(button->GPIOx, button->GPIO_Pin);
+  if (button->pressed != current) {
+    button->pressed = current;
+    button->changed = true;
+    if (!button->pressed)
+      button->toggle = !button->toggle;
+    return true;
+  } else {
+    button->changed = false;
+  }
+  return button->changed;
+}
+
+void on_armed() {
+  HAL_GPIO_WritePin(GPIOB, LED_Blue_Pin, GPIO_PIN_RESET);
+
+  ssd1306_Fill(Black);
+  ssd1306_SetCursor(0, 0);
+  snprintf(str_buffer, sizeof(str_buffer) - 1, "ARMED");
+  ssd1306_WriteString(str_buffer, Font_16x26, White);
+  ssd1306_UpdateScreen();
+
+  for (uint8_t i = 0; i < 6 - 1; i++) {
+    HAL_GPIO_TogglePin(GPIOC, Buzzer_Pin);
+    HAL_Delay(50);
+  }
+  HAL_GPIO_TogglePin(GPIOC, Buzzer_Pin);
+}
+
+void on_disarmed() {
+  ssd1306_Fill(Black);
+  ssd1306_SetCursor(0, 0);
+  snprintf(str_buffer, sizeof(str_buffer) - 1, "DISARMED");
+  ssd1306_WriteString(str_buffer, Font_16x26, White);
+  ssd1306_UpdateScreen();
+
+  for (uint8_t i = 0; i < 6 - 1; i++) {
+    HAL_GPIO_TogglePin(GPIOC, Buzzer_Pin);
+    HAL_Delay(50);
+  }
+  HAL_GPIO_TogglePin(GPIOC, Buzzer_Pin);
 }
 
 /* USER CODE END 0 */
@@ -140,13 +232,6 @@ int main(void)
   srand(HAL_GetTick());
   ssd1306_Init();
 
-  debug_log("I2C Devices:");
-  for(uint8_t i = 1, ret; i < 128; i++)
-    if (HAL_OK == HAL_I2C_IsDeviceReady(&hi2c1, (uint16_t)(i<<1), 3, 5))
-    	debug_log("0x%X", i);
-
-
-  debug_log("ICM-20602 setup");
   struct icm20602_dev icm20602 = ICM20602_DEFAULT_INIT();
   icm20602.i2c_disable = true;
   icm20602.hal_sleep = HAL_Delay;
@@ -154,135 +239,108 @@ int main(void)
   icm20602.hal_wr = _icm20602_hal_wr;
   icm20602_init(&icm20602);
 
-  debug_log("OLED setup");
-  char str_buffer[256] = "Boop zero";
-  struct { float x, y, dx, dy; uint8_t r; } pos;
-  uint32_t last_boop = HAL_GetTick();
-  uint32_t boop_counter = 0;
-  uint32_t beep_counter = 0;
-  uint8_t button_presed_prev = 0;
+  ticker_t blink_ticker = create_ticker(1000);
+  button_t button = { GPIOC, Button_Pin };
+  ticker_t button_arm_ticker = create_ticker(1000);
 
-  const uint8_t alts_count = 50;
+  bool armed = false;
+  uint32_t arm_pressed = 0;
+  uint32_t arm_timeout = 1000;
+  on_disarmed();
+
+  const uint8_t alts_count = 100;
   float alts[alts_count];
   uint8_t alts_curr = 0;
+  float alt_base = 0;
 
-  pos.r = 10;
-  pos.x = (128 - pos.r) / 2;
-  pos.y = (64 - pos.r) / 2;
-  pos.dx = rand_sign() * (rand() % 10 / 2. + 1);
-  pos.dy = rand_sign() * (rand() % 10 / 2. + 1);
+  const uint8_t accs_count = 5;
+  float accs[accs_count];
+  uint8_t accs_curr = 0;
 
   BMP280_HandleTypedef bmp280;
-  float pressure, temperature, altitude, altitude0;
   bmp280_init_default_params(&bmp280.params);
   bmp280.addr = BMP280_I2C_ADDRESS_0;
   bmp280.i2c = &hi2c1;
+  if (!bmp280_init(&bmp280, &bmp280.params))
+    debug_printf("Baro init failed\n");
 
-  if (!bmp280_init(&bmp280, &bmp280.params)) {
-	  const char* baro_error = "Baro init failed";
-	  debug_log(baro_error);
-  }
+  // Initialize alt and accel
 
   HAL_Delay(100);
 
+  float pressure, temperature, altitude;
   bmp280_read_float(&bmp280, &temperature, &pressure, NULL);
-  altitude0 = altitude_from_pressure(pressure, temperature);
+  alt_base = altitude_from_pressure(pressure, temperature);
+  altitude = alt_base;
+  for (uint16_t i = 0; i < alts_count; i++)
+    alts[i] = alt_base;
 
-  for (uint8_t i = 0; i < alts_count; i++) {
-	  bmp280_read_float(&bmp280, &temperature, &pressure, NULL);
-	  alts[i] = altitude_from_pressure(pressure, temperature);
-  }
+  float ax, ay, az;
+  icm20602_read_accel(&icm20602, &ax, &ay, &az);
+  float acceleration = accel_abs(ax, ay, az);
+  for (uint16_t i = 0; i < accs_count; i++)
+    accs[i] = acceleration;
 
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  while (1)
-  {
-	  pos.x += pos.dx;
-	  pos.y += pos.dy;
+  while (1) {
+    uint32_t now = HAL_GetTick();
 
-	  if (pos.x < 0) {
-		  pos.x = 0;
-		  pos.dx = -pos.dx;
-	  } else if (pos.x + pos.r >= 128) {
-		  pos.x = 128 - pos.r;
-		  pos.dx = -pos.dx;
-	  }
+    if (tick(&blink_ticker) && !armed)
+        HAL_GPIO_TogglePin(GPIOB, LED_Blue_Pin);
 
-	  if (pos.y < 50) {
-		  pos.y = 50;
-		  pos.dy = -pos.dy;
-	  } else if (pos.y + pos.r >= 64) {
-		  pos.y = 64 - pos.r;
-		  pos.dy = -pos.dy;
-	  }
+    if (check_button(&button))
+      HAL_GPIO_WritePin(GPIOC, Buzzer_Pin, button.pressed);
+    if (button.pressed)
+      alt_base = altitude;
 
-	  uint32_t now = HAL_GetTick();
-	  if (now - last_boop > 1000) {
-		  last_boop = now;
-		  boop_counter++;
-		  HAL_GPIO_TogglePin(GPIOB, LED_Blue_Pin);
-	  }
+    if (button.pressed) {
+      if (button.changed)
+        arm_pressed = now;
+    } else
+      arm_pressed = 0;
 
-	  bmp280_read_float(&bmp280, &temperature, &pressure, NULL);
-	  alts[alts_curr] = altitude_from_pressure(pressure, temperature);
-	  alts_curr = (alts_curr + 1) % alts_count;
-	  altitude = 0;
-	  for (uint8_t i = 0; i < alts_count; i++)
-		  altitude += alts[i];
-	  altitude /= alts_count;
+    if (arm_pressed && now - arm_pressed > arm_timeout) {
+      if (armed) {
+        armed = false;
+        arm_pressed = 0;
+        on_disarmed();
+      } else {
+        armed = true;
+        arm_pressed = 0;
+        on_armed();
+        button.toggle = true;
+      }
+    }
 
-	  uint8_t button_presed = !HAL_GPIO_ReadPin(GPIOC, Button_Pin);
+    /*
+    bmp280_read_float(&bmp280, &temperature, &pressure, NULL);
+    alts[alts_curr] = altitude_from_pressure(pressure, temperature);
+    altitude = 0;
+    for (uint16_t i = 0; i < alts_count; i++)
+      altitude += alts[i] / alts_count;
+    alts_curr = (alts_curr + 1) % alts_count;
+    */
 
-	  if (button_presed != button_presed_prev) {
-		  HAL_GPIO_WritePin(GPIOC, Buzzer_Pin, button_presed);
-		  if (button_presed)
-			  beep_counter++;
-		  button_presed_prev = button_presed;
-	  }
+    if (armed) {
+      float ax_prev = ax, ay_prev = ay, az_prev = az;
+      icm20602_read_accel(&icm20602, &ax, &ay, &az);
+      if (ax != ax_prev || ay != ay_prev || az != az_prev) {
 
-	  if (button_presed) {
-		  altitude0 = altitude;
-	  }
+      accs[accs_curr] = accel_abs(ax, ay, az);
 
-	  ssd1306_Fill(Black);
+      acceleration = 0;
+      for (uint16_t i = 0; i < accs_count; i++)
+        acceleration += accs[i];
+      acceleration /= accs_count;
+      if (!button.toggle)
+        debug_printf("min:-30 max:30 x:%f y:%f z:%f cur:%f avg:%f\n", 10*ax, 10*ay, 10*az, 10*accs[accs_curr], 10*acceleration);
+      accs_curr = (accs_curr + 1) % accs_count;
+      }
 
-	  snprintf(str_buffer, sizeof(str_buffer) - 1, "#%u (%d, %d), %u", boop_counter, (uint8_t)pos.x, (uint8_t)pos.y, beep_counter);
-	  ssd1306_SetCursor(0, 0);
-	  ssd1306_WriteString(str_buffer, Font_6x8, White);
-
-	  snprintf(str_buffer, sizeof(str_buffer) - 1, "Pressure: %.2f Pa", pressure);
-	  ssd1306_SetCursor(0, 10);
-	  ssd1306_WriteString(str_buffer, Font_6x8, White);
-
-	  snprintf(str_buffer, sizeof(str_buffer) - 1, "Temperature: %.2f C", temperature);
-	  ssd1306_SetCursor(0, 20);
-	  ssd1306_WriteString(str_buffer, Font_6x8, White);
-
-	  snprintf(str_buffer, sizeof(str_buffer) - 1, "Alt_relative: %.2f m", altitude - altitude0);
-	  ssd1306_SetCursor(0, 30);
-	  ssd1306_WriteString(str_buffer, Font_6x8, White);
-
-	  float ax, ay, az;
-	  float gx, gy, gz;
-
-	  icm20602_read_accel(&icm20602, &ax, &ay, &az);
-	  icm20602_read_gyro(&icm20602, &gx, &gy, &gz);
-
-	  snprintf(
-        str_buffer,
-		sizeof(str_buffer) - 1,
-		"G %f %f %f A %f %f %f",
-		ax, ay, az, gx, gy, gz
-	  );
-	  ssd1306_SetCursor(0, 40);
-	  ssd1306_WriteString(str_buffer, Font_6x8, White);
-
-	  ssd1306_DrawRectangle(pos.x, pos.y, pos.x + pos.r - 1, pos.y + pos.r - 1, White);
-	  ssd1306_UpdateScreen();
-
-	  HAL_Delay(33);
+    }
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -483,7 +541,7 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_WritePin(GPIOC, Buzzer_Pin|SPI1_CS_MANUAL_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(LED_Blue_GPIO_Port, LED_Blue_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(LED_Blue_GPIO_Port, LED_Blue_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin : Buzzer_Pin */
   GPIO_InitStruct.Pin = Buzzer_Pin;
@@ -516,46 +574,8 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 
-static void debug_printf(const char* format, ...) {
-  static char buff[1024];
-  va_list argptr;
-  va_start(argptr, format);
-  vsnprintf(buff, 1023, format, argptr);
-  va_end(argptr);
-  const size_t len = strlen(buff);
-  HAL_UART_Transmit(&huart1, (uint8_t*)buff, len, 1000);
-}
+//point_t scale(point_t p, point_t s);
 
-
-static void debug_log(const char* format, ...) {
-  static char buff[1024];
-  va_list argptr;
-  va_start(argptr, format);
-  vsnprintf(buff, 1023, format, argptr);
-  va_end(argptr);
-  const size_t len = strlen(buff);
-  HAL_UART_Transmit(&huart1, (uint8_t*)buff, len, 1000);
-  HAL_UART_Transmit(&huart1, "\n", 1, 1000);
-}
-
-int8_t _icm20602_hal_rd(uint8_t id, uint8_t reg, uint8_t * data, uint16_t len) {
-	reg |= 128; // set first bit to 1 to read from spi register
-	HAL_GPIO_WritePin(GPIOC, SPI1_CS_MANUAL_Pin, GPIO_PIN_RESET);
-	HAL_StatusTypeDef s;
-	s = HAL_SPI_Transmit(&hspi1, &reg, 1, 1000);
-	s = s ? s : HAL_SPI_Receive(&hspi1, data, len, 1000);
-	HAL_GPIO_WritePin(GPIOC, SPI1_CS_MANUAL_Pin, GPIO_PIN_SET);
-	return s;
-}
-
-int8_t _icm20602_hal_wr(uint8_t id, uint8_t reg, uint8_t * data, uint16_t len) {
-	HAL_GPIO_WritePin(GPIOC, SPI1_CS_MANUAL_Pin, GPIO_PIN_RESET);
-	HAL_StatusTypeDef s;
-	s = HAL_SPI_Transmit(&hspi1, &reg, 1, 1000);
-	s = s ? s : HAL_SPI_Transmit(&hspi1, data, len, 1000);
-	HAL_GPIO_WritePin(GPIOC, SPI1_CS_MANUAL_Pin, GPIO_PIN_SET);
-	return s;
-}
 /* USER CODE END 4 */
 
 /**

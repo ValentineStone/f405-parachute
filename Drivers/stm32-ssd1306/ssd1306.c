@@ -201,7 +201,7 @@ void ssd1306_UpdateScreen(void) {
 //    X => X Coordinate
 //    Y => Y Coordinate
 //    color => Pixel color
-void ssd1306_DrawPixel(uint8_t x, uint8_t y, SSD1306_COLOR color) {
+void ssd1306_DrawPixel(int16_t x, int16_t y, SSD1306_COLOR color) {
     if(x >= SSD1306_WIDTH || y >= SSD1306_HEIGHT) {
         // Don't write outside the buffer
         return;
@@ -226,11 +226,13 @@ char ssd1306_WriteChar(char ch, FontDef Font, SSD1306_COLOR color) {
     if (ch < 32 || ch > 126)
         return 0;
     
-    // Check remaining space on current line
-    if (SSD1306_WIDTH < (SSD1306.CurrentX + Font.FontWidth) ||
-        SSD1306_HEIGHT < (SSD1306.CurrentY + Font.FontHeight))
+    // Check is character is visible
+    if (SSD1306.CurrentX > SSD1306_WIDTH ||
+        SSD1306.CurrentX < -Font.FontWidth ||
+        SSD1306.CurrentY > SSD1306_HEIGHT ||
+        SSD1306.CurrentY < -Font.FontHeight)
     {
-        // Not enough space on current line
+        // character outside screen, ignore
         return 0;
     }
     
@@ -256,8 +258,13 @@ char ssd1306_WriteChar(char ch, FontDef Font, SSD1306_COLOR color) {
 // Write full string to screenbuffer
 char ssd1306_WriteString(char* str, FontDef Font, SSD1306_COLOR color) {
     // Write until null-byte
+    int16_t indent = SSD1306.CurrentX;
     while (*str) {
-        if (ssd1306_WriteChar(*str, Font, color) != *str) {
+        if (*str == '\n' || *str == '\r') {
+            // go to next line, simulate "CR LF"
+            SSD1306.CurrentY = indent;
+            SSD1306.CurrentY += Font.FontHeight;
+        } else if (ssd1306_WriteChar(*str, Font, color) != *str) {
             // Char could not be written
             return *str;
         }
@@ -265,19 +272,23 @@ char ssd1306_WriteString(char* str, FontDef Font, SSD1306_COLOR color) {
         // Next char
         str++;
     }
+
+    // The current line is now taken, simulate "CR LF"
+    SSD1306.CurrentY = indent;
+    SSD1306.CurrentY += Font.FontHeight;
     
     // Everything ok
     return *str;
 }
 
 // Position the cursor
-void ssd1306_SetCursor(uint8_t x, uint8_t y) {
+void ssd1306_SetCursor(int16_t x, int16_t y) {
     SSD1306.CurrentX = x;
     SSD1306.CurrentY = y;
 }
 
 // Draw line by Bresenhem's algorithm
-void ssd1306_Line(uint8_t x1, uint8_t y1, uint8_t x2, uint8_t y2, SSD1306_COLOR color) {
+void ssd1306_Line(int16_t x1, int16_t y1, int16_t x2, int16_t y2, SSD1306_COLOR color) {
   int32_t deltaX = abs(x2 - x1);
   int32_t deltaY = abs(y2 - y1);
   int32_t signX = ((x1 < x2) ? 1 : -1);
@@ -348,12 +359,12 @@ static uint16_t ssd1306_NormalizeTo0_360(uint16_t par_deg) {
  * start_angle in degree
  * sweep in degree
  */
-void ssd1306_DrawArc(uint8_t x, uint8_t y, uint8_t radius, uint16_t start_angle, uint16_t sweep, SSD1306_COLOR color) {
+void ssd1306_DrawArc(int16_t x, int16_t y, uint8_t radius, uint16_t start_angle, uint16_t sweep, SSD1306_COLOR color) {
     #define CIRCLE_APPROXIMATION_SEGMENTS 36
     float approx_degree;
     uint32_t approx_segments;
-    uint8_t xp1,xp2;
-    uint8_t yp1,yp2;
+    int16_t xp1,xp2;
+    int16_t yp1,yp2;
     uint32_t count = 0;
     uint32_t loc_sweep = 0;
     float rad;
@@ -385,7 +396,7 @@ void ssd1306_DrawArc(uint8_t x, uint8_t y, uint8_t radius, uint16_t start_angle,
     return;
 }
 //Draw circle by Bresenhem's algorithm
-void ssd1306_DrawCircle(uint8_t par_x,uint8_t par_y,uint8_t par_r,SSD1306_COLOR par_color) {
+void ssd1306_DrawCircle(int16_t par_x, int16_t par_y,uint8_t par_r,SSD1306_COLOR par_color) {
   int32_t x = -par_r;
   int32_t y = 0;
   int32_t err = 2 - 2 * par_r;
@@ -430,7 +441,7 @@ void ssd1306_DrawCircle(uint8_t par_x,uint8_t par_y,uint8_t par_r,SSD1306_COLOR 
 }
 
 //Draw rectangle
-void ssd1306_DrawRectangle(uint8_t x1, uint8_t y1, uint8_t x2, uint8_t y2, SSD1306_COLOR color) {
+void ssd1306_DrawRectangle(int16_t x1, int16_t y1, int16_t x2, int16_t y2, SSD1306_COLOR color) {
   ssd1306_Line(x1,y1,x2,y1,color);
   ssd1306_Line(x2,y1,x2,y2,color);
   ssd1306_Line(x2,y2,x1,y2,color);
@@ -441,7 +452,7 @@ void ssd1306_DrawRectangle(uint8_t x1, uint8_t y1, uint8_t x2, uint8_t y2, SSD13
 
 //Draw bitmap - ported from the ADAFruit GFX library
 
-void ssd1306_DrawBitmap(uint8_t x, uint8_t y, const unsigned char* bitmap, uint8_t w, uint8_t h, SSD1306_COLOR color)
+void ssd1306_DrawBitmap(int16_t x, int16_t y, const unsigned char* bitmap, uint8_t w, uint8_t h, SSD1306_COLOR color)
 {
     int16_t byteWidth = (w + 7) / 8; // Bitmap scanline pad = whole byte
     uint8_t byte = 0;

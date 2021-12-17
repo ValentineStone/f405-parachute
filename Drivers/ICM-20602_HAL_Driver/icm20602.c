@@ -80,13 +80,15 @@
 
 // extra steps, but I'm paranoid about some compilers/systems not handling the
 // conversion from uint8_t to int16_t correctly
+/*
 #define UINT8_TO_INT16(dst, src_high, src_low) \
   do { \
     dst = (src_high); \
     dst <<= 8; \
     dst |= (src_low); \
   } while (0);
-
+*/
+#define UINT8_TO_INT16(dst, src_high, src_low) dst = (src_high << 8) | src_low;
 /***** Local Data *****/
 
 // TODO: Look into getting real temp sensitivity.
@@ -238,8 +240,12 @@ icm20602_init(struct icm20602_dev * dev)
       ON_ERROR_GOTO((0 == r), return_err);
     }
 
-    tmp = (dev->accel_g) << 2;
+
+    tmp = dev->accel_g;
     r = dev->hal_wr(dev->id, REG_ACCEL_CONFIG, &tmp, 1);
+
+    r = dev->hal_rd(dev->id, REG_ACCEL_CONFIG, &(dev->accel_g), 1);
+
     ON_ERROR_GOTO((0 == r), return_err);
   }
 
