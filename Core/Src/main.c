@@ -144,23 +144,41 @@ bool tick(ticker_t* t) {
 typedef struct button_t {
   GPIO_TypeDef* GPIOx;
   uint16_t GPIO_Pin;
-  int8_t pressed;
-  bool toggle;
+  uint32_t doubleclickInterval;
+  uint32_t pressedAt;
+  bool _reading1;
+  bool _reading2;
+  bool _reading3;
+  bool pressed;
   bool changed;
+  bool doubleclicked;
+  bool toggleReleased;
+  bool togglePressed;
+  bool toggleDoubleclicked;
 } button_t;
 
-bool check_button(button_t* button) {
-  bool current = !HAL_GPIO_ReadPin(button->GPIOx, button->GPIO_Pin);
-  if (button->pressed != current) {
-    button->pressed = current;
+void update_button(button_t* button, uint32_t now) {
+  button->_reading1 = button->_reading2;
+  button->_reading2 = button->_reading3;
+  button->_reading3 = !HAL_GPIO_ReadPin(button->GPIOx, button->GPIO_Pin);
+  bool reading = button->_reading1 + button->_reading2 + button->_reading3 >= 2;
+  button->doubleclicked = false;
+  button->changed = false;
+  if (button->pressed != reading) {
+    button->pressed = reading;
     button->changed = true;
-    if (!button->pressed)
-      button->toggle = !button->toggle;
-    return true;
-  } else {
+    if (button->pressed) {
+      button->togglePressed = !button->togglePressed;
+      if (now - button->pressedAt < button->doubleclickInterval) {
+        button->doubleclicked = true;
+        button->toggleDoubleclicked = !button->toggleDoubleclicked;
+      }
+      button->pressedAt = now;
+    }
+    else
+      button->toggleReleased = !button->toggleReleased;
+  } else
     button->changed = false;
-  }
-  return button->changed;
 }
 
 void on_armed() {
@@ -240,12 +258,22 @@ int main(void)
   icm20602_init(&icm20602);
 
   ticker_t blink_ticker = create_ticker(1000);
-  button_t button = { GPIOC, Button_Pin };
-  ticker_t button_arm_ticker = create_ticker(1000);
+  button_t button = { GPIOC, Button_Pin, 300 };
+
+  ticker_t buzzer_alarm_ticker = create_ticker(1000);
 
   bool armed = false;
   uint32_t arm_pressed = 0;
   uint32_t arm_timeout = 1000;
+
+  bool alarm = false;
+  bool low_g_detected = false;
+  uint32_t low_g_detected_since = 0;
+
+  uint32_t arm_togglePressed_at = 0;
+  uint32_t arm_doubleclick_interval = 300;
+  bool arm_doubleclicked = 0;
+
   on_disarmed();
 
   const uint8_t alts_count = 100;
@@ -288,11 +316,16 @@ int main(void)
   while (1) {
     uint32_t now = HAL_GetTick();
 
+    update_button(&button, now);
+
     if (tick(&blink_ticker) && !armed)
         HAL_GPIO_TogglePin(GPIOB, LED_Blue_Pin);
 
-    if (check_button(&button))
+    if (alarm && tick(&buzzer_alarm_ticker))
+      HAL_GPIO_TogglePin(GPIOC, Buzzer_Pin);
+    else if (button.changed)
       HAL_GPIO_WritePin(GPIOC, Buzzer_Pin, button.pressed);
+
     if (button.pressed)
       alt_base = altitude;
 
@@ -311,7 +344,6 @@ int main(void)
         armed = true;
         arm_pressed = 0;
         on_armed();
-        button.toggle = true;
       }
     }
 
@@ -335,7 +367,7 @@ int main(void)
       for (uint16_t i = 0; i < accs_count; i++)
         acceleration += accs[i];
       acceleration /= accs_count;
-      if (!button.toggle)
+      if (button.toggleDoubleclicked)
         debug_printf("min:-30 max:30 x:%f y:%f z:%f cur:%f avg:%f\n", 10*ax, 10*ay, 10*az, 10*accs[accs_curr], 10*acceleration);
       accs_curr = (accs_curr + 1) % accs_count;
       }
