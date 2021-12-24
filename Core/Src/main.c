@@ -211,6 +211,14 @@ void on_disarmed() {
   HAL_GPIO_TogglePin(GPIOC, Buzzer_Pin);
 }
 
+void on_alarm() {
+  ssd1306_Fill(White);
+  ssd1306_SetCursor(0, 0);
+  snprintf(str_buffer, sizeof(str_buffer) - 1, "ALARM!");
+  ssd1306_WriteString(str_buffer, Font_16x26, Black);
+  ssd1306_UpdateScreen();
+}
+
 /* USER CODE END 0 */
 
 /**
@@ -255,12 +263,13 @@ int main(void)
   icm20602.hal_sleep = HAL_Delay;
   icm20602.hal_rd = _icm20602_hal_rd;
   icm20602.hal_wr = _icm20602_hal_wr;
+  icm20602.accel_dlpf = ICM20602_ACCEL_DLPF_BYPASS_1046_HZ;
   icm20602_init(&icm20602);
 
   ticker_t blink_ticker = create_ticker(1000);
   button_t button = { GPIOC, Button_Pin, 300 };
 
-  ticker_t buzzer_alarm_ticker = create_ticker(1000);
+  ticker_t buzzer_alarm_ticker = create_ticker(200);
 
   bool armed = false;
   uint32_t arm_pressed = 0;
@@ -269,10 +278,8 @@ int main(void)
   bool alarm = false;
   bool low_g_detected = false;
   uint32_t low_g_detected_since = 0;
-
-  uint32_t arm_togglePressed_at = 0;
-  uint32_t arm_doubleclick_interval = 300;
-  bool arm_doubleclicked = 0;
+  float low_g_detection_range = 0.2;
+  uint32_t low_g_detection_interval = 1000;
 
   on_disarmed();
 
@@ -321,9 +328,10 @@ int main(void)
     if (tick(&blink_ticker) && !armed)
         HAL_GPIO_TogglePin(GPIOB, LED_Blue_Pin);
 
-    if (alarm && tick(&buzzer_alarm_ticker))
-      HAL_GPIO_TogglePin(GPIOC, Buzzer_Pin);
-    else if (button.changed)
+    if (alarm) {
+      if(tick(&buzzer_alarm_ticker))
+        HAL_GPIO_TogglePin(GPIOC, Buzzer_Pin);
+    } else if (button.changed)
       HAL_GPIO_WritePin(GPIOC, Buzzer_Pin, button.pressed);
 
     if (button.pressed)
@@ -339,10 +347,12 @@ int main(void)
       if (armed) {
         armed = false;
         arm_pressed = 0;
+        alarm = false;
         on_disarmed();
       } else {
         armed = true;
         arm_pressed = 0;
+        button.toggleDoubleclicked = true;
         on_armed();
       }
     }
@@ -356,19 +366,38 @@ int main(void)
     alts_curr = (alts_curr + 1) % alts_count;
     */
 
-    if (armed) {
+    if (armed && !alarm) {
       float ax_prev = ax, ay_prev = ay, az_prev = az;
       icm20602_read_accel(&icm20602, &ax, &ay, &az);
       if (ax != ax_prev || ay != ay_prev || az != az_prev) {
 
-      accs[accs_curr] = accel_abs(ax, ay, az);
+      float acceleration_now = accel_abs(ax, ay, az);
+      accs[accs_curr] = acceleration_now;
 
       acceleration = 0;
       for (uint16_t i = 0; i < accs_count; i++)
         acceleration += accs[i];
       acceleration /= accs_count;
+
+      if (acceleration_now < low_g_detection_range) {
+        if (low_g_detected) {
+          if (now - low_g_detected_since > low_g_detection_interval) {
+            alarm = true;
+            on_alarm();
+          }
+        } else {
+          low_g_detected = true;
+          low_g_detected_since = now;
+        }
+      } else {
+        low_g_detected = false;
+      }
+
+      float low_g_time = !low_g_detected ? 0 : ((now - low_g_detected_since) / (float)low_g_detection_interval);
+      low_g_time = low_g_time > 3 ? 3 : low_g_time;
+
       if (button.toggleDoubleclicked)
-        debug_printf("min:-30 max:30 x:%f y:%f z:%f cur:%f avg:%f\n", 10*ax, 10*ay, 10*az, 10*accs[accs_curr], 10*acceleration);
+        debug_printf("min:-3 max:3 x:%f y:%f z:%f cur:%f avg:%f t:%f\n", ax, ay, az, acceleration_now, acceleration, low_g_time);
       accs_curr = (accs_curr + 1) % accs_count;
       }
 

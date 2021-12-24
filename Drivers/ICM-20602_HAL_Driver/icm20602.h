@@ -52,7 +52,7 @@
     .gyro_fifo = false, \
     .gyro_dlpf = ICM20602_GYRO_DLPF_10_HZ, \
     .gyro_dps = ICM20602_GYRO_RANGE_2000_DPS, \
-    .sample_rate_div = 100, \
+    .sample_rate_div = 1, \
     .i2c_disable = false, \
   }
 

@@ -290,7 +290,7 @@ icm20602_init(struct icm20602_dev * dev)
 
   // configure sample rate divider (TODO: is this gyro only?)
   // note: SAMPLE_RATE = INTERNAL_SAMPLE_RATE / (1 + SMPLRT_DIV)
-  tmp = (0 != dev->sample_rate_div) ? dev->sample_rate_div - 1 : 1;
+  tmp = dev->sample_rate_div;
   r = dev->hal_wr(dev->id, REG_SMPLRT_DIV, &tmp, 1);
   ON_ERROR_GOTO((0 == r), return_err);
 
