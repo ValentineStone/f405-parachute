@@ -112,9 +112,15 @@ int8_t _icm20602_hal_wr(uint8_t id, uint8_t reg, uint8_t * data, uint16_t len) {
   return s;
 }
 
-float altitude_from_pressure(float pressure, float temperature) {
+float altitude_from_pressure_and_temp(float pressure, float temperature) {
   static float pressure0 = 101325;
   return ((pow(pressure0 / pressure, 1 / 5.257) - 1) * (temperature + 273.15)) / 0.0065;
+}
+
+
+float altitude_from_pressure(float pressure) {
+  static float pressure0 = 101325;
+  return  44330 * (1.0 - pow(pressure / pressure0, 0.1903));
 }
 
 float accel_abs(float ax, float ay, float az) {
@@ -180,6 +186,14 @@ void update_button(button_t* button, uint32_t now) {
   } else
     button->changed = false;
 }
+void beep(uint8_t count, uint16_t duration, uint16_t silence) {
+  for (uint8_t i = 0; i < count; i++) {
+    HAL_GPIO_WritePin(GPIOC, Buzzer_Pin, GPIO_PIN_SET);
+    HAL_Delay(duration);
+    HAL_GPIO_WritePin(GPIOC, Buzzer_Pin, GPIO_PIN_RESET);
+    HAL_Delay(silence);
+  }
+}
 
 void on_armed() {
   HAL_GPIO_WritePin(GPIOB, LED_Blue_Pin, GPIO_PIN_RESET);
@@ -189,12 +203,7 @@ void on_armed() {
   snprintf(str_buffer, sizeof(str_buffer) - 1, "ARMED");
   ssd1306_WriteString(str_buffer, Font_16x26, White);
   ssd1306_UpdateScreen();
-
-  for (uint8_t i = 0; i < 6 - 1; i++) {
-    HAL_GPIO_TogglePin(GPIOC, Buzzer_Pin);
-    HAL_Delay(50);
-  }
-  HAL_GPIO_TogglePin(GPIOC, Buzzer_Pin);
+  beep(3, 50, 50);
 }
 
 void on_disarmed() {
@@ -203,12 +212,7 @@ void on_disarmed() {
   snprintf(str_buffer, sizeof(str_buffer) - 1, "DISARMED");
   ssd1306_WriteString(str_buffer, Font_16x26, White);
   ssd1306_UpdateScreen();
-
-  for (uint8_t i = 0; i < 6 - 1; i++) {
-    HAL_GPIO_TogglePin(GPIOC, Buzzer_Pin);
-    HAL_Delay(50);
-  }
-  HAL_GPIO_TogglePin(GPIOC, Buzzer_Pin);
+  beep(3, 50, 50);
 }
 
 void on_alarm() {
@@ -276,17 +280,21 @@ int main(void)
   uint32_t arm_timeout = 1000;
 
   bool alarm = false;
+
   bool low_g_detected = false;
   uint32_t low_g_detected_since = 0;
-  float low_g_detection_range = 0.2;
+  float low_g_detection_range = 0.5;
   uint32_t low_g_detection_interval = 1000;
+
+  float baro_fall_detection_speed = 10;
+  uint32_t baro_fall_detection_interval = 1000;
 
   on_disarmed();
 
-  const uint8_t alts_count = 100;
+  const uint8_t alts_count = 20;
   float alts[alts_count];
+  uint32_t alt_times[alts_count];
   uint8_t alts_curr = 0;
-  float alt_base = 0;
 
   const uint8_t accs_count = 5;
   float accs[accs_count];
@@ -294,6 +302,7 @@ int main(void)
 
   BMP280_HandleTypedef bmp280;
   bmp280_init_default_params(&bmp280.params);
+  bmp280.params.standby = BMP280_STANDBY_62;
   bmp280.addr = BMP280_I2C_ADDRESS_0;
   bmp280.i2c = &hi2c1;
   if (!bmp280_init(&bmp280, &bmp280.params))
@@ -303,12 +312,12 @@ int main(void)
 
   HAL_Delay(100);
 
-  float pressure, temperature, altitude;
+  float pressure, temperature, altitude, altitude_base;
   bmp280_read_float(&bmp280, &temperature, &pressure, NULL);
-  alt_base = altitude_from_pressure(pressure, temperature);
-  altitude = alt_base;
+  altitude_base = altitude_from_pressure(pressure);
+  altitude = altitude_base;
   for (uint16_t i = 0; i < alts_count; i++)
-    alts[i] = alt_base;
+    alts[i] = altitude_base;
 
   float ax, ay, az;
   icm20602_read_accel(&icm20602, &ax, &ay, &az);
@@ -328,14 +337,11 @@ int main(void)
     if (tick(&blink_ticker) && !armed)
         HAL_GPIO_TogglePin(GPIOB, LED_Blue_Pin);
 
-    if (alarm) {
-      if(tick(&buzzer_alarm_ticker))
-        HAL_GPIO_TogglePin(GPIOC, Buzzer_Pin);
-    } else if (button.changed)
-      HAL_GPIO_WritePin(GPIOC, Buzzer_Pin, button.pressed);
+    if(alarm && tick(&buzzer_alarm_ticker))
+      HAL_GPIO_TogglePin(GPIOC, Buzzer_Pin);
 
     if (button.pressed)
-      alt_base = altitude;
+      altitude_base = altitude;
 
     if (button.pressed) {
       if (button.changed)
@@ -354,51 +360,93 @@ int main(void)
         arm_pressed = 0;
         button.toggleDoubleclicked = true;
         on_armed();
+
+
+        bmp280_read_float(&bmp280, &temperature, &pressure, NULL);
+        altitude_base = altitude_from_pressure(pressure);
+        altitude = altitude_base;
+        for (uint16_t i = 0; i < alts_count; i++) {
+          alts[i] = altitude_base;
+          alt_times[i] = 0;
+        }
+
+        icm20602_read_accel(&icm20602, &ax, &ay, &az);
+        acceleration = accel_abs(ax, ay, az);
+        for (uint16_t i = 0; i < accs_count; i++)
+          accs[i] = acceleration;
       }
     }
 
-    /*
-    bmp280_read_float(&bmp280, &temperature, &pressure, NULL);
-    alts[alts_curr] = altitude_from_pressure(pressure, temperature);
-    altitude = 0;
-    for (uint16_t i = 0; i < alts_count; i++)
-      altitude += alts[i] / alts_count;
-    alts_curr = (alts_curr + 1) % alts_count;
-    */
 
     if (armed && !alarm) {
       float ax_prev = ax, ay_prev = ay, az_prev = az;
       icm20602_read_accel(&icm20602, &ax, &ay, &az);
       if (ax != ax_prev || ay != ay_prev || az != az_prev) {
 
-      float acceleration_now = accel_abs(ax, ay, az);
-      accs[accs_curr] = acceleration_now;
+        float acceleration_now = accel_abs(ax, ay, az);
+        accs[accs_curr] = acceleration_now;
 
-      acceleration = 0;
-      for (uint16_t i = 0; i < accs_count; i++)
-        acceleration += accs[i];
-      acceleration /= accs_count;
+        acceleration = 0;
+        for (uint16_t i = 0; i < accs_count; i++)
+          acceleration += accs[i];
+        acceleration /= accs_count;
 
-      if (acceleration_now < low_g_detection_range) {
-        if (low_g_detected) {
-          if (now - low_g_detected_since > low_g_detection_interval) {
-            alarm = true;
-            on_alarm();
+        if (acceleration_now < low_g_detection_range) {
+          if (low_g_detected) {
+            if (now - low_g_detected_since > low_g_detection_interval) {
+              alarm = true;
+              on_alarm();
+            }
+          } else {
+            low_g_detected = true;
+            low_g_detected_since = now;
           }
         } else {
-          low_g_detected = true;
-          low_g_detected_since = now;
+          low_g_detected = false;
         }
-      } else {
-        low_g_detected = false;
+
+        float low_g_time = !low_g_detected ? 0 : ((now - low_g_detected_since) / (float)low_g_detection_interval);
+        low_g_time = low_g_time > 3 ? 3 : low_g_time;
+
+        if (button.toggleDoubleclicked){
+          //debug_printf("min:-3 max:3 x:%f y:%f z:%f cur:%f avg:%f t:%f\n", ax, ay, az, acceleration_now, acceleration, low_g_time);
+        }
+        accs_curr = (accs_curr + 1) % accs_count;
       }
 
-      float low_g_time = !low_g_detected ? 0 : ((now - low_g_detected_since) / (float)low_g_detection_interval);
-      low_g_time = low_g_time > 3 ? 3 : low_g_time;
+      float pressure_prev = pressure;
+      float temperature_prev = temperature;
+      bmp280_read_float(&bmp280, &temperature, &pressure, NULL);
 
-      if (button.toggleDoubleclicked)
-        debug_printf("min:-3 max:3 x:%f y:%f z:%f cur:%f avg:%f t:%f\n", ax, ay, az, acceleration_now, acceleration, low_g_time);
-      accs_curr = (accs_curr + 1) % accs_count;
+      if (pressure != pressure_prev || temperature != temperature_prev) {
+        float altitude_now = altitude_from_pressure(pressure);
+        alts[alts_curr] = altitude_now;
+        alt_times[alts_curr] = now;
+        altitude = 0;
+        for (uint16_t i = 0; i < alts_count; i++)
+          altitude += alts[i] / alts_count;
+
+        uint8_t start_index = (alts_curr + 1) % alts_count;
+        float alt_diff = 0;
+        for (uint16_t i = 0; i < alts_count - 2; i++) {
+          uint16_t i0 = (alts_count + alts_curr + i - 1) % alts_count;
+          uint16_t i1 = (alts_count + alts_curr + i) % alts_count;
+          bool timely = now - alt_times[i0] < baro_fall_detection_interval;
+          if (timely) {
+            alt_diff += alts[i0] - alts[i1];
+            if (alt_diff <= -baro_fall_detection_speed) {
+              alarm = true;
+              on_alarm();
+              break;
+            }
+          } else break;
+        }
+
+        alts_curr = (alts_curr + 1) % alts_count;
+
+        if (button.toggleDoubleclicked) {
+          debug_printf("cur:%f avg:%f dif:%f\n", altitude_now - altitude_base, altitude - altitude_base, alt_diff);
+        }
       }
 
     }
