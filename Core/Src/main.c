@@ -27,8 +27,6 @@
 #include <stdarg.h>
 #include <time.h>
 #include <string.h>
-#include "ssd1306.h"
-#include "ssd1306_fonts.h"
 #include <math.h>
 #include "bmp280.h"
 #include "icm20602.h"
@@ -61,6 +59,8 @@ RNG_HandleTypeDef hrng;
 
 SPI_HandleTypeDef hspi1;
 
+TIM_HandleTypeDef htim4;
+
 UART_HandleTypeDef huart1;
 
 /* USER CODE BEGIN PV */
@@ -74,6 +74,7 @@ static void MX_I2C1_Init(void);
 static void MX_USART1_UART_Init(void);
 static void MX_RNG_Init(void);
 static void MX_SPI1_Init(void);
+static void MX_TIM4_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -199,30 +200,15 @@ void beep(uint8_t count, uint16_t duration, uint16_t silence) {
 
 void on_armed() {
   HAL_GPIO_WritePin(GPIOB, LED_Blue_Pin, GPIO_PIN_RESET);
-
-  ssd1306_Fill(Black);
-  ssd1306_SetCursor(0, 0);
-  snprintf(str_buffer, sizeof(str_buffer) - 1, "ARMED");
-  ssd1306_WriteString(str_buffer, Font_16x26, White);
-  ssd1306_UpdateScreen();
   beep(3, 50, 50);
 }
 
 void on_disarmed() {
-  ssd1306_Fill(Black);
-  ssd1306_SetCursor(0, 0);
-  snprintf(str_buffer, sizeof(str_buffer) - 1, "DISARMED");
-  ssd1306_WriteString(str_buffer, Font_16x26, White);
-  ssd1306_UpdateScreen();
   beep(3, 50, 50);
 }
 
 void on_alarm() {
-  ssd1306_Fill(White);
-  ssd1306_SetCursor(0, 0);
-  snprintf(str_buffer, sizeof(str_buffer) - 1, "ALARM!");
-  ssd1306_WriteString(str_buffer, Font_16x26, Black);
-  ssd1306_UpdateScreen();
+
 }
 
 /* USER CODE END 0 */
@@ -259,10 +245,10 @@ int main(void)
   MX_USART1_UART_Init();
   MX_RNG_Init();
   MX_SPI1_Init();
+  MX_TIM4_Init();
   /* USER CODE BEGIN 2 */
 
   srand(HAL_GetTick());
-  ssd1306_Init();
 
   struct icm20602_dev icm20602 = ICM20602_DEFAULT_INIT();
   icm20602.i2c_disable = true;
@@ -327,11 +313,35 @@ int main(void)
   for (uint16_t i = 0; i < accs_count; i++)
     accs[i] = acceleration;
 
+  HAL_TIM_PWM_Start(&htim4, TIM_CHANNEL_3);
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1) {
+    /*
+    int32_t DC = 0;
+    while(DC < 65535)
+    {
+        TIM4->CCR3 = DC;
+        DC += 70;
+        HAL_Delay(1);
+    }
+    while(DC > 0)
+    {
+        TIM4->CCR3 = DC;
+        DC -= 70;
+        HAL_Delay(1);
+    }
+    */
+
+    for(int x = 0; x < 65535; x += 10) {
+      TIM4->CCR3 = x;
+      //__HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_3, x);
+      HAL_Delay(3);
+    }
+
     uint32_t now = HAL_GetTick();
 
     update_button(&button, now);
@@ -480,10 +490,10 @@ void SystemClock_Config(void)
   RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
-  RCC_OscInitStruct.PLL.PLLM = 16;
-  RCC_OscInitStruct.PLL.PLLN = 192;
+  RCC_OscInitStruct.PLL.PLLM = 8;
+  RCC_OscInitStruct.PLL.PLLN = 72;
   RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
-  RCC_OscInitStruct.PLL.PLLQ = 4;
+  RCC_OscInitStruct.PLL.PLLQ = 3;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
   {
     Error_Handler();
@@ -492,12 +502,12 @@ void SystemClock_Config(void)
   */
   RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
                               |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
-  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_HSI;
+  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
-  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
+  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
   RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
 
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_0) != HAL_OK)
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK)
   {
     Error_Handler();
   }
@@ -602,6 +612,65 @@ static void MX_SPI1_Init(void)
 }
 
 /**
+  * @brief TIM4 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM4_Init(void)
+{
+
+  /* USER CODE BEGIN TIM4_Init 0 */
+
+  /* USER CODE END TIM4_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
+
+  /* USER CODE BEGIN TIM4_Init 1 */
+
+  /* USER CODE END TIM4_Init 1 */
+  htim4.Instance = TIM4;
+  htim4.Init.Prescaler = 0;
+  htim4.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim4.Init.Period = 65535;
+  htim4.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim4.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim4) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim4, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_PWM_Init(&htim4) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim4, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigOC.OCMode = TIM_OCMODE_PWM1;
+  sConfigOC.Pulse = 0;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  if (HAL_TIM_PWM_ConfigChannel(&htim4, &sConfigOC, TIM_CHANNEL_3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM4_Init 2 */
+
+  /* USER CODE END TIM4_Init 2 */
+  HAL_TIM_MspPostInit(&htim4);
+
+}
+
+/**
   * @brief USART1 Initialization Function
   * @param None
   * @retval None
@@ -652,7 +721,7 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_WritePin(GPIOC, Buzzer_Pin|SPI1_CS_MANUAL_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(LED_Blue_GPIO_Port, LED_Blue_Pin, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(LED_Blue_GPIO_Port, LED_Blue_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin : Buzzer_Pin */
   GPIO_InitStruct.Pin = Buzzer_Pin;
