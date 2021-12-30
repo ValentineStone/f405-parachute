@@ -81,6 +81,8 @@ static void MX_SPI1_Init(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
+// Minimal version, without OLED, builtin BEC and HC-12 module
+
 char str_buffer[256] = "";
 
 static void debug_printf(const char* format, ...) {
