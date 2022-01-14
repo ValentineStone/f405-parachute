@@ -204,11 +204,14 @@ void on_armed() {
 }
 
 void on_disarmed() {
+  htim4.Instance->CCR3 =  75; // duty cycle is 1.5 ms -  90 deg
   beep(3, 50, 50);
 }
 
 void on_alarm() {
-
+  //htim4.Instance->CCR3 =  25; // duty cycle is 0.5 ms -   0 deg
+  //htim4.Instance->CCR3 =  75; // duty cycle is 1.5 ms -  90 deg
+  htim4.Instance->CCR3 = 125; // duty cycle is 2.5 ms - 180 deg
 }
 
 /* USER CODE END 0 */
@@ -250,6 +253,8 @@ int main(void)
 
   srand(HAL_GetTick());
 
+  HAL_TIM_PWM_Start(&htim4, TIM_CHANNEL_3);
+
   struct icm20602_dev icm20602 = ICM20602_DEFAULT_INIT();
   icm20602.i2c_disable = true;
   icm20602.hal_sleep = HAL_Delay;
@@ -259,7 +264,7 @@ int main(void)
   icm20602_init(&icm20602);
 
   ticker_t blink_ticker = create_ticker(1000);
-  button_t button = { GPIOC, Button_Pin, 300 };
+  button_t button = { GPIOC, Button_S1_Pin, 300 };
 
   ticker_t buzzer_alarm_ticker = create_ticker(200);
 
@@ -272,7 +277,7 @@ int main(void)
   bool low_g_detected = false;
   uint32_t low_g_detected_since = 0;
   float low_g_detection_range = 0.5;
-  uint32_t low_g_detection_interval = 1000;
+  uint32_t low_g_detection_interval = 800;
 
   float baro_fall_detection_speed = 10;
   uint32_t baro_fall_detection_interval = 1000;
@@ -313,34 +318,11 @@ int main(void)
   for (uint16_t i = 0; i < accs_count; i++)
     accs[i] = acceleration;
 
-  HAL_TIM_PWM_Start(&htim4, TIM_CHANNEL_3);
-
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1) {
-    /*
-    int32_t DC = 0;
-    while(DC < 65535)
-    {
-        TIM4->CCR3 = DC;
-        DC += 70;
-        HAL_Delay(1);
-    }
-    while(DC > 0)
-    {
-        TIM4->CCR3 = DC;
-        DC -= 70;
-        HAL_Delay(1);
-    }
-    */
-
-    for(int x = 0; x < 65535; x += 10) {
-      TIM4->CCR3 = x;
-      //__HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_3, x);
-      HAL_Delay(3);
-    }
 
     uint32_t now = HAL_GetTick();
 
@@ -421,7 +403,7 @@ int main(void)
         low_g_time = low_g_time > 3 ? 3 : low_g_time;
 
         if (button.toggleDoubleclicked){
-          //debug_printf("min:-3 max:3 x:%f y:%f z:%f cur:%f avg:%f t:%f\n", ax, ay, az, acceleration_now, acceleration, low_g_time);
+          //debug_printf("min:-3 max:3 1:1 x:%f y:%f z:%f cur:%f avg:%f t:%f\n", ax, ay, az, acceleration_now, acceleration, low_g_time);
         }
         accs_curr = (accs_curr + 1) % accs_count;
       }
@@ -444,20 +426,19 @@ int main(void)
           uint16_t i0 = (alts_count + alts_curr + i - 1) % alts_count;
           uint16_t i1 = (alts_count + alts_curr + i) % alts_count;
           bool timely = now - alt_times[i0] < baro_fall_detection_interval;
-          if (timely) {
-            alt_diff += alts[i0] - alts[i1];
-            if (alt_diff <= -baro_fall_detection_speed) {
-              alarm = true;
-              on_alarm();
-              break;
-            }
-          } else break;
+          if (!timely) break;
+          alt_diff += alts[i0] - alts[i1];
+        }
+
+        if (alt_diff <= -baro_fall_detection_speed) {
+          alarm = true;
+          on_alarm();
         }
 
         alts_curr = (alts_curr + 1) % alts_count;
 
         if (button.toggleDoubleclicked) {
-          debug_printf("cur:%f avg:%f dif:%f\n", altitude_now - altitude_base, altitude - altitude_base, alt_diff);
+          debug_printf("min:%f cur:%f avg:%f dif:%f\n", -baro_fall_detection_speed, altitude_now - altitude_base, altitude - altitude_base, alt_diff);
         }
       }
 
@@ -491,9 +472,9 @@ void SystemClock_Config(void)
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
   RCC_OscInitStruct.PLL.PLLM = 8;
-  RCC_OscInitStruct.PLL.PLLN = 72;
+  RCC_OscInitStruct.PLL.PLLN = 168;
   RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
-  RCC_OscInitStruct.PLL.PLLQ = 3;
+  RCC_OscInitStruct.PLL.PLLQ = 7;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
   {
     Error_Handler();
@@ -504,10 +485,10 @@ void SystemClock_Config(void)
                               |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
   RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
-  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
-  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
+  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV4;
+  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV2;
 
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK)
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_5) != HAL_OK)
   {
     Error_Handler();
   }
@@ -631,9 +612,9 @@ static void MX_TIM4_Init(void)
 
   /* USER CODE END TIM4_Init 1 */
   htim4.Instance = TIM4;
-  htim4.Init.Prescaler = 0;
+  htim4.Init.Prescaler = 1680;
   htim4.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim4.Init.Period = 65535;
+  htim4.Init.Period = 1000;
   htim4.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim4.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_Base_Init(&htim4) != HAL_OK)
@@ -737,11 +718,11 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(SPI1_CS_MANUAL_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : Button_Pin */
-  GPIO_InitStruct.Pin = Button_Pin;
+  /*Configure GPIO pins : Button_S1_Pin Button_S4_Pin */
+  GPIO_InitStruct.Pin = Button_S1_Pin|Button_S4_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
   GPIO_InitStruct.Pull = GPIO_PULLUP;
-  HAL_GPIO_Init(Button_GPIO_Port, &GPIO_InitStruct);
+  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
   /*Configure GPIO pin : LED_Blue_Pin */
   GPIO_InitStruct.Pin = LED_Blue_Pin;

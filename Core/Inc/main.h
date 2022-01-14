@@ -64,8 +64,10 @@ void Error_Handler(void);
 #define Buzzer_GPIO_Port GPIOC
 #define SPI1_CS_MANUAL_Pin GPIO_PIN_2
 #define SPI1_CS_MANUAL_GPIO_Port GPIOC
-#define Button_Pin GPIO_PIN_9
-#define Button_GPIO_Port GPIOC
+#define Button_S1_Pin GPIO_PIN_6
+#define Button_S1_GPIO_Port GPIOC
+#define Button_S4_Pin GPIO_PIN_9
+#define Button_S4_GPIO_Port GPIOC
 #define LED_Blue_Pin GPIO_PIN_9
 #define LED_Blue_GPIO_Port GPIOB
 /* USER CODE BEGIN Private defines */
