@@ -84,6 +84,9 @@ static void MX_TIM4_Init(void);
 
 // Minimal version, without OLED, builtin BEC and HC-12 module
 
+#define Button_Debug_Pin Button_S1_Pin
+#define Button_Pin Button_S4_Pin
+
 char str_buffer[256] = "";
 
 static void debug_printf(const char* format, ...) {
@@ -264,9 +267,11 @@ int main(void)
   icm20602_init(&icm20602);
 
   ticker_t blink_ticker = create_ticker(1000);
-  button_t button = { GPIOC, Button_S1_Pin, 300 };
+  ticker_t blink_ticker_alarm = create_ticker(200);
+  button_t button = { GPIOC, Button_Pin, 300 };
 
   ticker_t buzzer_alarm_ticker = create_ticker(200);
+  ticker_t buzzer_disarm_ticker = create_ticker(500);
 
   bool armed = false;
   uint32_t arm_pressed = 0;
@@ -328,7 +333,13 @@ int main(void)
 
     update_button(&button, now);
 
-    if (tick(&blink_ticker) && !armed)
+    if (tick(&blink_ticker) && (!armed))
+        HAL_GPIO_TogglePin(GPIOB, LED_Blue_Pin);
+
+    if (tick(&buzzer_disarm_ticker) && (!armed))
+      HAL_GPIO_TogglePin(GPIOC, Buzzer_Pin);
+
+    if (tick(&blink_ticker_alarm) && alarm)
         HAL_GPIO_TogglePin(GPIOB, LED_Blue_Pin);
 
     if(alarm && tick(&buzzer_alarm_ticker))
@@ -420,14 +431,13 @@ int main(void)
         for (uint16_t i = 0; i < alts_count; i++)
           altitude += alts[i] / alts_count;
 
-        uint8_t start_index = (alts_curr + 1) % alts_count;
         float alt_diff = 0;
         for (uint16_t i = 0; i < alts_count - 2; i++) {
-          uint16_t i0 = (alts_count + alts_curr + i - 1) % alts_count;
-          uint16_t i1 = (alts_count + alts_curr + i) % alts_count;
+          uint16_t i0 = (alts_count + alts_curr - i - 1) % alts_count;
+          uint16_t i1 = (alts_count + alts_curr - i) % alts_count;
           bool timely = now - alt_times[i0] < baro_fall_detection_interval;
           if (!timely) break;
-          alt_diff += alts[i0] - alts[i1];
+          alt_diff += alts[i1] - alts[i0];
         }
 
         if (alt_diff <= -baro_fall_detection_speed) {
